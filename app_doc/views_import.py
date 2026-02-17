@@ -34,6 +34,7 @@ import traceback
 import re
 import os.path
 import json
+import uuid
 
 
 # 导入文集
@@ -366,3 +367,36 @@ def import_doc_docx(request):
             return JsonResponse({'status': False, 'data': _('无有效文件')})
     else:
         return JsonResponse({'status': False, 'data': _('参数错误')})
+
+
+# 导入docx格式Word文档为文集
+@require_POST
+def import_word_project(request):
+    docx = request.FILES.get('docx')
+    editor_mode = request.POST.get('editor_mode', 1)
+
+    if not docx:
+        return JsonResponse({'status': False, 'data': '请选择Word文件'})
+
+    if not docx.name.endswith('.docx'):
+        return JsonResponse({'status': False, 'data': '仅支持.docx格式'})
+
+    # 保存临时文件
+    tmp_dir = os.path.join(settings.MEDIA_ROOT, 'tmp')
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    tmp_path = os.path.join(tmp_dir, f'{uuid.uuid4()}.docx')
+    with open(tmp_path, 'wb+') as f:
+        for chunk in docx.chunks():
+            f.write(chunk)
+
+    # 调用导入逻辑
+    importer = ImportDocxAsProject(
+        file_name=docx.name,
+        docx_file_path=tmp_path,
+        editor_mode=editor_mode,
+        create_user=request.user
+    )
+    result = importer.run()
+
+    return JsonResponse(result)

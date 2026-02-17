@@ -13,6 +13,8 @@ from django.db import transaction
 from django.conf import settings
 from loguru import logger
 from markdownify import markdownify
+from bs4 import BeautifulSoup,Tag
+from app_admin.models import SysSetting
 import mammoth
 import shutil
 import os
@@ -20,6 +22,7 @@ import time
 import re
 import yaml
 import sys
+import datetime
 
 
 # 导入Zip文集
@@ -275,6 +278,188 @@ class ImportDocxDoc():
         except:
             os.remove(self.docx_file_path)
             return {'status':False,'data':_('读取异常')}
+
+
+# 导入Word文档为文集
+class ImportDocxAsProject:
+    def __init__(self, file_name,docx_file_path, editor_mode, create_user):
+        self.filename = file_name
+        self.docx_file_path = docx_file_path
+        self.create_user = create_user
+        self.editor_mode = int(editor_mode)
+        # 获取存储类型
+        try:
+            self.storage_type = SysSetting.objects.get(types="storage", name="storage_type").value
+        except:
+            self.storage_type = '0'
+
+    def parse_html_to_structure(self, html):
+        soup = BeautifulSoup(html, "lxml")
+        container = soup.body or soup
+
+        BLOCK_TAGS = {'p', 'ul', 'ol','li', 'pre', 'table', 'blockquote', 'img'}
+
+        headings = container.find_all(['h1', 'h2', 'h3'])
+        if not headings:
+            return []
+
+        min_level = min(int(h.name[1]) for h in headings)
+        max_level = min(min_level + 2, 3)
+
+        nodes = []
+        stack = [{'level': 0, 'children': nodes}]
+
+        def _walk(node):
+            for elem in node.children:
+                if not isinstance(elem, Tag):
+                    continue
+
+                tag = elem.name.lower()
+
+                # —— 标题处理 ——
+                if tag in ['h1', 'h2', 'h3']:
+                    raw = int(tag[1])
+                    if raw < min_level or raw > max_level:
+                        continue
+
+                    level = raw - min_level + 1
+                    current = {
+                        'title': elem.get_text(strip=True),
+                        'level': level,
+                        'content': '',
+                        'children': []
+                    }
+
+                    while stack and stack[-1]['level'] >= level:
+                        stack.pop()
+
+                    stack[-1]['children'].append(current)
+                    stack.append(current)
+                    continue
+
+                # —— 正文处理 ——
+                if len(stack) > 1 and tag in BLOCK_TAGS:
+                    stack[-1]['content'] += str(elem)
+                    continue
+                # —— 继续向下遍历 ——
+                _walk(elem)
+
+        _walk(container)
+        return nodes
+
+    # 转存docx文件中的图片
+    def convert_img(self, image):
+        image = libreoffice_wmf_conversion(image, post_process=image_trim)
+        if image.alt_text:
+            alt = image.alt_text.replace('\n', '').replace('\r', '')
+        else:
+            alt = ''
+        with image.open() as image_bytes:
+            file_suffix = image.content_type.split("/")[1]
+            file_time_name = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
+            # 本地存储
+            if self.storage_type == '0':
+                dir_name = upload_generation_dir()  # 获取当月文件夹名称
+                # 图片在媒体文件夹内的路径，形如 /202012/12542542.jpg
+                copy2_filename = dir_name + file_time_name + '.' + file_suffix
+                # 文件的绝对路径 形如/home/MrDoc/media/202012/12542542.jpg
+                new_media_file_path = settings.MEDIA_ROOT + copy2_filename
+                # 图片文件的相对url路径
+                file_url = '/media' + copy2_filename
+
+                # 图片数据写入数据库
+                Image.objects.create(
+                    user=self.create_user,
+                    file_path=file_url,
+                    file_name=file_time_name + '.' + file_suffix,
+                    remark=_('本地上传'),
+                )
+                with open(new_media_file_path, 'wb') as f:
+                    f.write(image_bytes.read())
+            else:
+                return {"src": ''}
+
+        return {"src": file_url, "alt_text": alt, "alt": alt}
+
+    @transaction.atomic
+    def recursive_save_docs(self, nodes, project_id, parent_doc_id=0):
+        """
+        递归创建Doc，关联父文档parent_doc和项目top_doc
+        """
+        created_docs = []
+        for idx, node in enumerate(nodes):
+            if self.editor_mode == 1:
+                # 转化HTML为Markdown
+                pre_content = markdownify(node['content'], heading_style="ATX")
+            else:
+                pre_content = node['content']
+            doc = Doc.objects.create(
+                name=node['title'],
+                pre_content=pre_content,
+                content=node['content'],
+                parent_doc=parent_doc_id,
+                top_doc=project_id,
+                sort=idx,
+                show_children=True,
+                create_user=self.create_user,
+                editor_mode=self.editor_mode,
+                status=1,
+            )
+            created_docs.append(doc)
+            if node['children']:
+                self.recursive_save_docs(node['children'], project_id, parent_doc_id=doc.id)
+        return created_docs
+
+    def run(self):
+        try:
+            with open(self.docx_file_path, "rb") as docx_file:
+                result = mammoth.convert_to_html(
+                    docx_file,
+                    convert_image=mammoth.images.img_element(self.convert_img)
+                )
+            html = result.value
+
+            # 解析html成层级结构
+            structure = self.parse_html_to_structure(html)
+
+            # 创建文集（Project）
+            project_name = self.filename.replace('.docx', '')
+            project = Project.objects.create(
+                name=project_name,
+                intro=_("由Word文档导入生成"),
+                create_user=self.create_user
+            )
+
+            if not structure:
+                if self.editor_mode == 1:
+                    # 转化HTML为Markdown
+                    pre_content = markdownify(html, heading_style="ATX")
+                else:
+                    pre_content = html
+                Doc.objects.create(
+                    name=project.name,
+                    content=html,
+                    pre_content=pre_content,
+                    parent_doc=0,
+                    top_doc=project.id,
+                    create_user=self.create_user,
+                    editor_mode=self.editor_mode,
+                    status=1,
+                )
+                return {'status': True, 'data': '未检测到标题，已导入为单一文档','pid':project.id}
+
+            # 递归保存文档树，关联文集
+            self.recursive_save_docs(structure, project.id)
+
+            os.remove(self.docx_file_path)
+            return {'status': True, 'data': _('文集和文档导入成功'),'pid':project.id}
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(f"导入Word为文集异常: {e}")
+            if os.path.exists(self.docx_file_path):
+                os.remove(self.docx_file_path)
+            return {'status': False, 'data': _('导入异常')}
 
 if __name__ == '__main__':
     imp = ImportZipProject()
