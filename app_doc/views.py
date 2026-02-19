@@ -425,6 +425,8 @@ def project_index(request,pro_id):
                 r_viewcode = request.COOKIES[viewcode_name] if viewcode_name in request.COOKIES.keys() else 0 # 从cookie中获取访问码
                 if viewcode != r_viewcode: # cookie中的访问码不等于文集访问码，跳转到访问码认证界面
                     return redirect('/check_viewcode/?to={}'.format(request.path))
+        elif project.role == 4 and request.user.is_authenticated is False:
+            return redirect('/login/?next=/project/{}/'.format(project.id))
 
         # 获取搜索词
         kw = request.GET.get('kw','')
@@ -506,7 +508,7 @@ def modify_project_role(request,pro_id):
             role_type = request.POST.get('role','')
             if role_type != '':
                 try:
-                    if int(role_type) in [0,1]:# 公开或私密
+                    if int(role_type) in [0,1,4]:# 公开/私密/登录用户可见
                         Project.objects.filter(id=int(pro_id)).update(
                             role = role_type,
                             modify_time = datetime.datetime.now()
@@ -1044,6 +1046,9 @@ def doc_index(request,pro_id=None,doc_id=None,doc=None):
                     viewcode_name] if viewcode_name in request.COOKIES.keys() else 0  # 从cookie中获取访问码
                 if viewcode != r_viewcode:  # cookie中的访问码不等于文集访问码，跳转到访问码认证界面
                     return redirect('/check_viewcode/?to={}'.format(request.path))
+        # 登录用户可见
+        elif project.role == 4 and request.user.is_authenticated is False:
+            return redirect('/login/?next=/doc/{}/'.format(doc.id))
 
         # 获取文档内容
         try:

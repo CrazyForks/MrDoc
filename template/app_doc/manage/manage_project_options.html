@@ -102,6 +102,7 @@
                             <input type="radio" name="role" value="1" title="{% trans '私密' %}" {% if pro.role == 1 %} checked {%endif%} lay-filter="role">
                             <input type="radio" name="role" value="2" title="{% trans '指定用户可见' %}" {% if pro.role == 2 %} checked {%endif%} lay-filter="role">
                             <input type="radio" name="role" value="3" title="{% trans '访问码可见' %}" {% if pro.role == 3 %} checked {%endif%} lay-filter="role">
+                            <input type="radio" name="role" value="4" title="{% trans '登录用户可见' %}" {% if pro.role == 4 %} checked {%endif%} lay-filter="role">
                         </div>
                     </div>
         
@@ -244,6 +245,9 @@
         if(data.value in [0,1]){
                 $("#role-pwd").css("display","none");
                 $("#role-user").css("display","none");
+        }else if(data.value == 4){
+            $("#role-pwd").css("display","none");
+            $("#role-user").css("display","none");
         }else if(data.value == 2){
                 $("#role-user").css("display","block");
                 $("#role-pwd").css("display","none");
